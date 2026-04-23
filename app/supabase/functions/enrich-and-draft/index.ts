@@ -56,7 +56,7 @@ async function enrichWithLinkedInV2(linkedinUrl: string, key: string): Promise<{
   if (!enrichmentId) throw new Error('FullEnrich did not return enrichment_id')
 
   await new Promise(r => setTimeout(r, 3000))
-  for (let i = 0; i < 22; i++) {
+  for (let i = 0; i < 18; i++) {
     if (i > 0) await new Promise(r => setTimeout(r, 5000))
 
     const pollRes = await fetch(`https://app.fullenrich.com/api/v2/contact/enrich/bulk/${enrichmentId}`, {
@@ -95,7 +95,7 @@ async function enrichWithLinkedInV2(linkedinUrl: string, key: string): Promise<{
     if (pollData.status === 'FAILED') throw new Error('FullEnrich enrichment failed')
   }
 
-  throw new Error('FullEnrich timeout — enrichment did not complete within 55s')
+  throw new Error('FullEnrich timeout — enrichment did not complete within polling window')
 }
 
 // ── Waterfall Step 3: Claude Haiku email pattern guess ──
@@ -146,18 +146,28 @@ async function searchGoogleForEmail(firstName: string, lastName: string, company
 }
 
 // ── Waterfall Step 5: verify an email via MyEmailVerifier with Kickbox fallback ──
-async function verifyEmail(email: string, myemailverifierKey: string, kickboxKey: string): Promise<{ verified: boolean; method: 'myemailverifier' | 'kickbox' | 'none'; result: string | null }> {
-  if (!email) return { verified: false, method: 'none', result: null }
+interface VerifyResult {
+  verified: boolean
+  accept_all: boolean
+  method: 'myemailverifier' | 'kickbox' | 'none'
+  result: string | null
+}
+
+async function verifyEmail(email: string, myemailverifierKey: string, kickboxKey: string): Promise<VerifyResult> {
+  if (!email) return { verified: false, accept_all: false, method: 'none', result: null }
   if (myemailverifierKey) {
     try {
       const res = await fetch(`https://api.myemailverifier.com/verify?secret=${encodeURIComponent(myemailverifierKey)}&email=${encodeURIComponent(email)}`)
       if (res.ok) {
         const data = await res.json()
         const status = String(data?.status || data?.result || '').toLowerCase()
-        if (status === 'valid' || status === 'accept_all') {
-          return { verified: true, method: 'myemailverifier', result: status }
+        if (status === 'valid') {
+          return { verified: true, accept_all: false, method: 'myemailverifier', result: status }
         }
-        return { verified: false, method: 'myemailverifier', result: status || 'unknown' }
+        if (status === 'accept_all') {
+          return { verified: true, accept_all: true, method: 'myemailverifier', result: status }
+        }
+        return { verified: false, accept_all: false, method: 'myemailverifier', result: status || 'unknown' }
       }
     } catch (e) { console.warn('MyEmailVerifier failed, trying Kickbox:', e) }
   }
@@ -168,13 +178,13 @@ async function verifyEmail(email: string, myemailverifierKey: string, kickboxKey
         const data = await res.json()
         const result = String(data?.result || '').toLowerCase()
         if (result === 'deliverable') {
-          return { verified: true, method: 'kickbox', result }
+          return { verified: true, accept_all: false, method: 'kickbox', result }
         }
-        return { verified: false, method: 'kickbox', result: result || 'unknown' }
+        return { verified: false, accept_all: false, method: 'kickbox', result: result || 'unknown' }
       }
     } catch (e) { console.warn('Kickbox verify failed:', e) }
   }
-  return { verified: false, method: 'none', result: null }
+  return { verified: false, accept_all: false, method: 'none', result: null }
 }
 
 // ── Waterfall Step 6: Apollo people match ──
@@ -245,6 +255,7 @@ interface WaterfallResult {
   company: string | null
   company_domain: string | null
   email_source: 'claude_pattern' | 'google_search' | 'apollo' | 'fullenrich' | null
+  email_accept_all: boolean
   title_verified: boolean
   raw: any
   steps: Array<{ provider: string; note: string }>
@@ -279,6 +290,7 @@ async function runEnrichmentWaterfall(params: {
     company: companyHint || null,
     company_domain: null,
     email_source: null,
+    email_accept_all: false,
     title_verified: false,
     raw: null,
     steps,
@@ -319,11 +331,12 @@ async function runEnrichmentWaterfall(params: {
   if (candidatePool.length > 0 && (keys.myemailverifier || keys.kickbox)) {
     for (const cand of candidatePool) {
       const v = await verifyEmail(cand.email, keys.myemailverifier, keys.kickbox)
-      await logDebug(db, userId, `verify_${v.method}`, { email: cand.email }, { verified: v.verified, result: v.result }, v.method === 'none' ? 500 : 200)
+      await logDebug(db, userId, `verify_${v.method}`, { email: cand.email }, { verified: v.verified, accept_all: v.accept_all, result: v.result }, v.method === 'none' ? 500 : 200)
       if (v.verified) {
         result.work_email = cand.email
         result.email_source = cand.origin
-        steps.push({ provider: 'verify', note: `verified ${cand.email} via ${v.method}` })
+        result.email_accept_all = v.accept_all
+        steps.push({ provider: 'verify', note: `verified ${cand.email} via ${v.method}${v.accept_all ? ' (accept_all)' : ''}` })
         return result
       }
     }
@@ -340,11 +353,12 @@ async function runEnrichmentWaterfall(params: {
       if (apollo.company && !result.company) result.company = apollo.company
       if (apollo.email) {
         const v = await verifyEmail(apollo.email, keys.myemailverifier, keys.kickbox)
-        await logDebug(db, userId, `verify_${v.method}`, { email: apollo.email, source: 'apollo' }, { verified: v.verified, result: v.result }, v.method === 'none' ? 500 : 200)
+        await logDebug(db, userId, `verify_${v.method}`, { email: apollo.email, source: 'apollo' }, { verified: v.verified, accept_all: v.accept_all, result: v.result }, v.method === 'none' ? 500 : 200)
         if (v.verified) {
           result.work_email = apollo.email.toLowerCase()
           result.email_source = 'apollo'
-          steps.push({ provider: 'apollo', note: `verified ${apollo.email}` })
+          result.email_accept_all = v.accept_all
+          steps.push({ provider: 'apollo', note: `verified ${apollo.email}${v.accept_all ? ' (accept_all)' : ''}` })
           return result
         }
         // Accept Apollo email even unverified if no verifier is configured at all
@@ -364,12 +378,15 @@ async function runEnrichmentWaterfall(params: {
     }
   }
 
-  // Step 7 — FullEnrich (last resort)
+  // Step 7 — FullEnrich (last resort, with hard 54s timeout to stay under Edge Function limit)
   if (keys.fullenrich) {
     let enrichRaw: any = null
     let enrichStatus = 0
     try {
-      const fe = await enrichWithLinkedInV2(linkedinUrl, keys.fullenrich)
+      const timeoutPromise = new Promise<never>((_, reject) =>
+        setTimeout(() => reject(new Error('FullEnrich timeout — 54s exceeded')), 54000)
+      )
+      const fe = await Promise.race([enrichWithLinkedInV2(linkedinUrl, keys.fullenrich), timeoutPromise])
       enrichRaw = fe.raw
       enrichStatus = 200
       result.raw = fe.raw
@@ -554,6 +571,19 @@ function computeDraftConfidence(
   ) * 100) / 100
 }
 
+// ── Shared cache query for saved_profiles ────────────────────────────────────
+async function getCachedProfile(db: any, userId: string, linkedinUrl: string) {
+  const cacheWindow = new Date(Date.now() - 30 * 24 * 60 * 60 * 1000).toISOString()
+  const { data } = await db.from('saved_profiles')
+    .select('id, full_name, work_email, personal_email, title, company, title_verified, email_status, is_bookmarked, enriched_at')
+    .eq('user_id', userId)
+    .eq('linkedin_url', linkedinUrl)
+    .or(`is_bookmarked.eq.true,enriched_at.gte.${cacheWindow}`)
+    .limit(1)
+    .maybeSingle()
+  return data
+}
+
 // ── Main handler ──────────────────────────────────────────────────────────────
 Deno.serve(async (req: Request) => {
   if (req.method === 'OPTIONS') return new Response('ok', { headers: cors })
@@ -650,15 +680,7 @@ Return ONLY the bullet list — no intro sentence, no JSON, no extra commentary.
       const linkedinUrl = (body.linkedinUrl || '').trim()
       if (!linkedinUrl) return json({ found: false })
 
-      const cacheWindow = new Date(Date.now() - 30 * 24 * 60 * 60 * 1000).toISOString()
-      const { data: cached } = await db.from('saved_profiles')
-        .select('full_name, work_email, personal_email, title, company, title_verified, email_status, is_bookmarked, enriched_at')
-        .eq('user_id', user.id)
-        .eq('linkedin_url', linkedinUrl)
-        .or(`is_bookmarked.eq.true,enriched_at.gte.${cacheWindow}`)
-        .limit(1)
-        .maybeSingle()
-
+      const cached = await getCachedProfile(db, user.id, linkedinUrl)
       if (!cached || !cached.full_name) return json({ found: false })
 
       return json({
@@ -955,7 +977,9 @@ Return ONLY the bullet list — no intro sentence, no JSON, no extra commentary.
         })
 
         const email = enrichResult.work_email || enrichResult.personal_email || null
-        const emailStatus = enrichResult.work_email ? 'found' : enrichResult.personal_email ? 'uncertain' : 'not_found'
+        const emailStatus = enrichResult.work_email
+          ? (enrichResult.email_accept_all ? 'uncertain' : 'found')
+          : enrichResult.personal_email ? 'uncertain' : 'not_found'
         const newStatus = email ? 'enriched' : 'no_email'
 
         if (!email && !enrichResult.full_name && enrichResult.fullenrich_failed) {
@@ -1157,6 +1181,7 @@ Return ONLY the bullet list — no intro sentence, no JSON, no extra commentary.
     }
 
     // ── Guard: reject unknown actions before falling through to default flow ──
+    // If you add a new action handler above, you MUST also add its name here.
     const KNOWN_ACTIONS = [
       'enrich-and-draft', 'summarize-job', 'bookmark-profile', 'check-saved-profile',
       'get-saved-profiles', 'save-job', 'get-saved-jobs', 'delete-job',
@@ -1185,14 +1210,7 @@ Return ONLY the bullet list — no intro sentence, no JSON, no extra commentary.
       if (rp) recruiterProfile = rp as RecruiterProfile
     } catch (e) { console.warn('recruiter_profiles fetch failed (non-fatal):', e) }
 
-    const cacheWindow = new Date(Date.now() - 30 * 24 * 60 * 60 * 1000).toISOString()
-    const { data: cached } = await db.from('saved_profiles')
-      .select('full_name, work_email, personal_email, title, company, title_verified, email_status, is_bookmarked, enriched_at')
-      .eq('user_id', user.id)
-      .eq('linkedin_url', linkedinUrl)
-      .or(`is_bookmarked.eq.true,enriched_at.gte.${cacheWindow}`)
-      .limit(1)
-      .maybeSingle()
+    const cached = await getCachedProfile(db, user.id, linkedinUrl)
 
     if (cached && cached.full_name) {
       const fullName     = cached.full_name
@@ -1292,7 +1310,9 @@ Return ONLY the bullet list — no intro sentence, no JSON, no extra commentary.
     work_email     = waterfall.work_email
     personal_email = waterfall.personal_email
     selectedEmail  = work_email || personal_email || null
-    emailStatus    = work_email ? 'found' : personal_email ? 'uncertain' : 'not_found'
+    emailStatus    = work_email
+      ? (waterfall.email_accept_all ? 'uncertain' : 'found')
+      : personal_email ? 'uncertain' : 'not_found'
     emailSource    = waterfall.email_source
     rawDataPayload = waterfall.raw
 
