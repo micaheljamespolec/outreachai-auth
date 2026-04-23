@@ -1,0 +1,10 @@
+# Replit-specific files (contain pasted user content, may include sensitive data)
+attached_assets/
+
+# macOS
+.DS_Store
+
+# Supabase local dev
+.supabase/
+.env
+.claude/

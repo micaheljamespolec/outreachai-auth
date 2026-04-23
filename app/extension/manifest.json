@@ -1,0 +1,60 @@
+{
+  "manifest_version": 3,
+  "name": "SourcedOut",
+  "version": "1.1.0",
+  "description": "AI-powered outreach for recruiters and talent sourcers.",
+  "permissions": [
+    "activeTab",
+    "storage",
+    "tabs",
+    "scripting"
+  ],
+  "host_permissions": [
+    "https://www.linkedin.com/*",
+    "https://*.supabase.co/*",
+    "https://mail.google.com/*",
+    "https://outlook.live.com/*",
+    "https://*/*"
+  ],
+  "content_scripts": [
+    {
+      "matches": [
+        "https://www.linkedin.com/in/*",
+        "https://www.linkedin.com/talent/*",
+        "https://www.linkedin.com/recruiter/*"
+      ],
+      "js": [
+        "content.js"
+      ],
+      "run_at": "document_idle"
+    }
+  ],
+  "action": {
+    "default_popup": "ui/popup.html",
+    "default_title": "SourcedOut"
+  },
+  "background": {
+    "service_worker": "background.js",
+    "type": "module"
+  },
+  "icons": {
+    "16": "icons/icon16.png",
+    "32": "icons/icon32.png",
+    "128": "icons/icon128.png"
+  },
+  "content_security_policy": {
+    "extension_pages": "script-src 'self'; object-src 'self'"
+  },
+  "web_accessible_resources": [
+    {
+      "resources": [
+        "auth.html",
+        "auth-callback.js",
+        "icons/*"
+      ],
+      "matches": [
+        "<all_urls>"
+      ]
+    }
+  ]
+}

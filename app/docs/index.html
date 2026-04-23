@@ -1,0 +1,34 @@
+<!DOCTYPE html>
+<html>
+<head>
+  <title>SourcedOut Auth</title>
+  <style>
+    body { font-family: -apple-system, sans-serif; display: flex; align-items: center;
+           justify-content: center; height: 100vh; margin: 0; background: #f5f7fa; }
+    .box { text-align: center; padding: 40px; background: white; border-radius: 12px;
+           box-shadow: 0 2px 12px rgba(0,0,0,0.08); max-width: 400px; }
+    h2 { margin: 0 0 8px; color: #1a1a2e; }
+    p  { color: #666; margin: 0; }
+  </style>
+</head>
+<body>
+  <div class="box" id="msg">
+    <h2>Signing you in...</h2>
+    <p>You can close this tab in a moment.</p>
+  </div>
+  <script>
+    const hash   = window.location.hash.substring(1)
+    const params = new URLSearchParams(hash)
+    const token  = params.get('access_token')
+    const box    = document.getElementById('msg')
+    if (token) {
+      box.innerHTML = '<h2>✅ Signed in!</h2><p>You can close this tab.</p>'
+    } else {
+      const err = params.get('error_description') || 'No token found'
+      box.innerHTML = '<h2>❌ Auth failed</h2><p>' + err + '</p>'
+    }
+    // The background.js service worker reads the full URL including this hash
+    // via chrome.scripting.executeScript — no need to send a message here
+  </script>
+</body>
+</html>
