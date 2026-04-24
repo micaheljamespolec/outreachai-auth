@@ -1,13 +1,13 @@
 // ─── config.js ────────────────────────────────────────────────────────────────
 export const CONFIG = {
-  supabaseUrl: 'https://jjqpfltgrpzbaedbatli.supabase.co',
-  supabaseKey: 'eyJhbGciOiJIUzI1NiIsInR5cCI6IkpXVCJ9.eyJpc3MiOiJzdXBhYmFzZSIsInJlZiI6ImpqcXBmbHRncnB6YmFlZGJhdGxpIiwicm9sZSI6ImFub24iLCJpYXQiOjE3NzY5NjI3MzAsImV4cCI6MjA5MjUzODczMH0.W2459vCxtWF_4ATyO3dT41_r_iDWUn8mKYHMCZsjwrA',
+  supabaseUrl: 'https://szxjcitbjcpkhxtjztay.supabase.co',
+  supabaseKey: 'eyJhbGciOiJIUzI1NiIsInR5cCI6IkpXVCJ9.eyJpc3MiOiJzdXBhYmFzZSIsInJlZiI6InN6eGpjaXRiamNwa2h4dGp6dGF5Iiwicm9sZSI6ImFub24iLCJpYXQiOjE3NzE3ODc2MDgsImV4cCI6MjA4NzM2MzYwOH0.9sgQhrNY8GGeMWIHPTnNehrM8eGD0tMHM6FCKDf-k08',
 
   fullenrichUrl: 'https://app.fullenrich.com/api/v1',
 
   appName:    'SourcedOut',
   version:    '1.1.0',
-  pricingUrl: 'https://jjqpfltgrpzbaedbatli.supabase.co/functions/v1/create-checkout', // TODO: replace with real Stripe payment link URL
+  pricingUrl: 'https://szxjcitbjcpkhxtjztay.supabase.co/functions/v1/create-checkout',
 
   stripe: {
     sourcer: {
