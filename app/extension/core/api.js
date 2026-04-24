@@ -80,14 +80,6 @@ export async function enrichAndDraft({ linkedinUrl, companyHint, userContext, fu
   })
 }
 
-// ── Fetch a job posting page's HTML via server-side proxy (avoids CORS) ──────
-export async function fetchJobUrl(url) {
-  return apiRequest(`${CONFIG.supabaseUrl}/functions/v1/enrich-and-draft`, {
-    method: 'POST',
-    body: JSON.stringify({ action: 'fetch-job-url', url }),
-  })
-}
-
 // ── Summarize raw job posting text into recruiter-friendly bullet points ──────
 export async function summarizeJob({ rawText, jobTitle, company }) {
   return apiRequest(`${CONFIG.supabaseUrl}/functions/v1/enrich-and-draft`, {

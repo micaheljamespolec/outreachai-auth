@@ -619,33 +619,6 @@ Deno.serve(async (req: Request) => {
     const body   = await req.json()
     const action = body.action || 'enrich-and-draft'
 
-    // ── Fetch-job-url action (proxy HTML fetch to avoid browser CORS) ──────────
-    if (action === 'fetch-job-url') {
-      const targetUrl = (body.url || '').trim()
-      if (!targetUrl || !/^https?:\/\//i.test(targetUrl)) {
-        return json({ error: { code: 'MISSING_INPUT', message: 'A valid URL is required.' } }, 400)
-      }
-      try {
-        const controller = new AbortController()
-        const timeoutId = setTimeout(() => controller.abort(), 20000)
-        const pageRes = await fetch(targetUrl, {
-          headers: {
-            'Accept': 'text/html,application/xhtml+xml,application/xml;q=0.9,*/*;q=0.8',
-            'Accept-Language': 'en-US,en;q=0.9',
-            'User-Agent': 'Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/124.0.0.0 Safari/537.36',
-          },
-          redirect: 'follow',
-          signal: controller.signal,
-        })
-        clearTimeout(timeoutId)
-        const html = await pageRes.text()
-        return json({ ok: pageRes.ok, status: pageRes.status, html: html.slice(0, 500_000) })
-      } catch (err) {
-        const msg = err instanceof Error ? err.message : 'Fetch failed'
-        return json({ error: { code: 'FETCH_FAILED', message: msg } }, 502)
-      }
-    }
-
     // ── Summarize-job action ───────────────────────────────────────────────────
     if (action === 'summarize-job') {
       const rawText  = (body.rawText  || '').slice(0, 3000)
@@ -1210,7 +1183,7 @@ Return ONLY the bullet list — no intro sentence, no JSON, no extra commentary.
     // ── Guard: reject unknown actions before falling through to default flow ──
     // If you add a new action handler above, you MUST also add its name here.
     const KNOWN_ACTIONS = [
-      'enrich-and-draft', 'fetch-job-url', 'summarize-job', 'bookmark-profile', 'check-saved-profile',
+      'enrich-and-draft', 'summarize-job', 'bookmark-profile', 'check-saved-profile',
       'get-saved-profiles', 'save-job', 'get-saved-jobs', 'delete-job',
       'import-campaign', 'get-campaigns', 'get-campaign-candidates',
       'enrich-campaign-candidate', 'draft-campaign-candidate',

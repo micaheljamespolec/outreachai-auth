@@ -1,8 +1,23 @@
 // ─── background.js ────────────────────────────────────────────────────────────
-// The auth callback is handled entirely by auth-callback.js (loaded inside
-// auth.html). That script parses the token, saves the session, and closes the
-// tab itself. This listener is a safety net: if auth-callback.js fails to
-// close the tab, we close it after 5 seconds.
+// Handles URL fetching for job extraction (MV3 background service worker has
+// broader fetch permissions than popup pages) and auth tab cleanup.
+
+chrome.runtime.onMessage.addListener((msg, sender, sendResponse) => {
+  if (msg.type === 'FETCH_URL') {
+    fetch(msg.url, {
+      headers: {
+        'Accept': 'text/html,application/xhtml+xml,application/xml;q=0.9,*/*;q=0.8',
+        'Accept-Language': 'en-US,en;q=0.9',
+      },
+      redirect: 'follow',
+      signal: AbortSignal.timeout(20000),
+    })
+      .then(r => r.text())
+      .then(html => sendResponse({ ok: true, html }))
+      .catch(err => sendResponse({ ok: false, error: err.message }))
+    return true
+  }
+})
 
 chrome.tabs.onUpdated.addListener((tabId, changeInfo, tab) => {
   const url        = tab.url ?? ''

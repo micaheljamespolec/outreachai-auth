@@ -1,7 +1,7 @@
 // ─── popup.js ─────────────────────────────────────────────────────────────────
 import { CONFIG } from './config.js'
 import { isLoggedIn, sendMagicLink, signInWithGoogle, signInWithMicrosoft, signInWithEmailPassword, signUpWithEmailPassword, getUser, signOut, getAccessToken, resetPassword } from './core/auth.js'
-import { getCreditsData, enrichAndDraft, summarizeJob, fetchJobUrl, bookmarkProfile, getSavedProfiles, checkSavedProfile, saveJob, getSavedJobs, deleteJob, openUpgradePage, parseErrorMessage, isAuthError } from './core/api.js'
+import { getCreditsData, enrichAndDraft, summarizeJob, bookmarkProfile, getSavedProfiles, checkSavedProfile, saveJob, getSavedJobs, deleteJob, openUpgradePage, parseErrorMessage, isAuthError } from './core/api.js'
 
 // ── State machine ─────────────────────────────────────────────────────────────
 // States: IDLE | PREFILLED | SUBMITTING | ENRICHING | DRAFTING | SUCCESS | PARTIAL_SUCCESS | EMPTY_RESULT | AUTH_ERROR | GENERIC_ERROR
@@ -1203,10 +1203,13 @@ function setupJobTab() {
         return { ldTitle, ldCompany, ldDescription, ogTitle, ogSite, pageTitle, bodyText, bodyDesc }
       }
 
-      // Fetch HTML via edge function proxy (server-side, no CORS issues)
-      const proxyRes = await fetchJobUrl(url)
-      if (!proxyRes?.html) throw new Error('Could not load page')
-      const parsed = parseJobHTML(proxyRes.html)
+      // Fetch HTML via background service worker (MV3 service workers have
+      // broader fetch permissions than popup pages — no CORS issues with https://*/* host_permissions)
+      const response = await new Promise(resolve =>
+        chrome.runtime.sendMessage({ type: 'FETCH_URL', url }, resolve)
+      )
+      if (!response?.ok) throw new Error(response?.error || 'Fetch failed')
+      const parsed = parseJobHTML(response.html)
 
       const { ldTitle, ldCompany, ldDescription, ogTitle, ogSite, pageTitle, bodyText, bodyDesc } = parsed
 
