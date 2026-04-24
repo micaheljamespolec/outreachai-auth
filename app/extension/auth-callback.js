@@ -10,7 +10,8 @@ import { CONFIG } from './config.js'
     box.innerHTML = '<div class="icon">✅</div><h2>Signed in successfully</h2><p>This tab will close automatically…</p>'
   }
   function showError (msg) {
-    box.innerHTML = '<div class="icon">❌</div><h2>Sign-in failed</h2><p>' + msg + '</p>'
+    box.innerHTML = '<div class="icon">❌</div><h2>Sign-in failed</h2><p></p>'
+    box.querySelector('p').textContent = msg
   }
 
   try {

@@ -133,7 +133,11 @@ function renderResult(result) {
   $('resName').textContent = person.fullName || '—'
 
   if (person.email) {
-    $('resEmail').innerHTML = `<span class="result-value email-found">${person.email}</span>`
+    const emailSpan = document.createElement('span')
+    emailSpan.className = 'result-value email-found'
+    emailSpan.textContent = person.email
+    $('resEmail').textContent = ''
+    $('resEmail').appendChild(emailSpan)
     $('resEmailRow').style.display = 'flex'
   } else {
     $('resEmail').textContent = person.emailStatus === 'not_found' ? 'Not found' : 'Uncertain'
@@ -176,7 +180,11 @@ function renderResult(result) {
     showSection('draftOutput', true)
     const subjectEl = $('draftSubjectLine')
     if (draft.subject) {
-      subjectEl.innerHTML = `<strong>Subject:</strong> ${draft.subject}`
+      subjectEl.textContent = ''
+      const bold = document.createElement('strong')
+      bold.textContent = 'Subject:'
+      subjectEl.appendChild(bold)
+      subjectEl.appendChild(document.createTextNode(' ' + draft.subject))
       $('draftBody').dataset.subject = draft.subject
     }
     $('draftBody').value = draft.body || ''
