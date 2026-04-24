@@ -17,6 +17,23 @@ chrome.runtime.onMessage.addListener((msg, sender, sendResponse) => {
       .catch(err => sendResponse({ ok: false, error: err.message }))
     return true
   }
+
+  if (msg.type === 'SCRAPE_TAB') {
+    chrome.tabs.query({ active: true, currentWindow: true }, tabs => {
+      const tab = tabs?.[0]
+      if (!tab?.id) { sendResponse({ ok: false, error: 'No active tab' }); return }
+      chrome.scripting.executeScript({
+        target: { tabId: tab.id },
+        func: () => document.documentElement.outerHTML
+      })
+        .then(results => {
+          const html = results?.[0]?.result || ''
+          sendResponse({ ok: !!html, html, error: html ? undefined : 'Empty page' })
+        })
+        .catch(err => sendResponse({ ok: false, error: err.message }))
+    })
+    return true
+  }
 })
 
 chrome.tabs.onUpdated.addListener((tabId, changeInfo, tab) => {

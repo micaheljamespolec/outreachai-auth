@@ -1171,13 +1171,21 @@ function setupJobTab() {
     if (preTitle)   $('jobTitle').value   = preTitle
     if (preCompany) $('jobCompany').value = preCompany
 
-    // ── Step 2: Fetch HTML via background service worker (MV3 CSP compliant) ──
+    // ── Step 2: Fetch HTML — try background fetch first, fall back to active tab ──
     try {
-      const response = await new Promise(resolve =>
+      let html = ''
+      const bgResponse = await new Promise(resolve =>
         chrome.runtime.sendMessage({ type: 'FETCH_URL', url }, resolve)
       )
-      if (!response?.ok) throw new Error(response?.error || 'Fetch failed')
-      const html = response.html
+      if (bgResponse?.ok && bgResponse.html) {
+        html = bgResponse.html
+      } else {
+        const tabResponse = await new Promise(resolve =>
+          chrome.runtime.sendMessage({ type: 'SCRAPE_TAB' }, resolve)
+        )
+        if (!tabResponse?.ok) throw new Error(tabResponse?.error || 'Fetch failed')
+        html = tabResponse.html
+      }
       const doc = new DOMParser().parseFromString(html, 'text/html')
 
       // JSON-LD (best source — Google Careers, Greenhouse, Lever, Ashby all include this)
