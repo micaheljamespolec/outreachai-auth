@@ -56,7 +56,7 @@ async function enrichWithLinkedInV2(linkedinUrl: string, key: string): Promise<{
   if (!enrichmentId) throw new Error('FullEnrich did not return enrichment_id')
 
   await new Promise(r => setTimeout(r, 3000))
-  for (let i = 0; i < 18; i++) {
+  for (let i = 0; i < 22; i++) {
     if (i > 0) await new Promise(r => setTimeout(r, 5000))
 
     const pollRes = await fetch(`https://app.fullenrich.com/api/v2/contact/enrich/bulk/${enrichmentId}`, {
@@ -121,11 +121,10 @@ Return ONLY JSON: {"candidates":["email1","email2","email3"]}`
 
 // ── Waterfall Step 4: Google Custom Search for public emails ──
 async function searchGoogleForEmail(firstName: string, lastName: string, companyHint: string | null, googleKey: string, googleCx: string): Promise<string[]> {
-  if (!googleKey || !googleCx) return []
+  if (!googleKey || !googleCx || !companyHint) return []
   const nameQuery = `${firstName || ''} ${lastName || ''}`.trim()
   if (!nameQuery) return []
-  const companyPart = companyHint ? `"${companyHint}"` : ''
-  const q = `"${nameQuery}" ${companyPart} email`.trim()
+  const q = `"${nameQuery}" "${companyHint}" email`
   const url = `https://www.googleapis.com/customsearch/v1?key=${encodeURIComponent(googleKey)}&cx=${encodeURIComponent(googleCx)}&q=${encodeURIComponent(q)}`
   try {
     const res = await fetch(url)
@@ -134,10 +133,14 @@ async function searchGoogleForEmail(firstName: string, lastName: string, company
     const items = Array.isArray(data.items) ? data.items : []
     const emailRegex = /[a-zA-Z0-9._%+-]+@[a-zA-Z0-9.-]+\.[a-zA-Z]{2,}/g
     const found = new Set<string>()
+    const domainLower = companyHint.toLowerCase()
     for (const item of items) {
       const text = `${item.snippet || ''} ${item.link || ''} ${item.title || ''}`
       const matches = text.match(emailRegex) || []
-      for (const m of matches) found.add(m.toLowerCase())
+      for (const m of matches) {
+        const emailLower = m.toLowerCase()
+        if (emailLower.endsWith('@' + domainLower)) found.add(emailLower)
+      }
     }
     return Array.from(found)
   } catch {
@@ -177,8 +180,8 @@ async function verifyEmail(email: string, myemailverifierKey: string, kickboxKey
       if (res.ok) {
         const data = await res.json()
         const result = String(data?.result || '').toLowerCase()
-        if (result === 'deliverable') {
-          return { verified: true, accept_all: false, method: 'kickbox', result }
+        if (result === 'deliverable' || result === 'risky') {
+          return { verified: true, accept_all: result === 'risky', method: 'kickbox', result }
         }
         return { verified: false, accept_all: false, method: 'kickbox', result: result || 'unknown' }
       }
@@ -299,27 +302,27 @@ async function runEnrichmentWaterfall(params: {
 
   const candidatePool: Array<{ email: string; origin: 'claude_pattern' | 'google_search' }> = []
 
-  // Step 3 — Claude Haiku pattern guess
+  // Step 3 — Claude Haiku email pattern guess
   if (fullName && companyHint && keys.anthropic) {
-    console.log('[Waterfall] Step 3: Trying Claude email pattern generation...')
+    console.log('[Step 3] Generating email patterns for:', fullName, 'at domain:', companyHint)
     try {
       const patterns = await generateEmailPatterns(fullName, companyHint, keys.anthropic)
       for (const p of patterns) candidatePool.push({ email: p.toLowerCase(), origin: 'claude_pattern' })
       await logDebug(db, userId, 'claude_pattern', { fullName, companyHint }, { candidates: patterns }, 200)
       steps.push({ provider: 'claude_pattern', note: `generated ${patterns.length} candidate(s)` })
-      console.log(`[Waterfall] Step 3 result: ${patterns.length} candidate(s) generated`)
+      console.log('[Step 3] Pattern candidates:', patterns)
     } catch (e: any) {
       await logDebug(db, userId, 'claude_pattern', { fullName, companyHint }, { error: String(e?.message || e) }, 500)
       steps.push({ provider: 'claude_pattern', note: 'failed' })
-      console.log('[Waterfall] Step 3 result: failed —', e?.message)
+      console.log('[Step 3] Failed —', e?.message)
     }
   } else {
-    console.log('[Waterfall] Step 3: Skipped (missing fullName, companyHint, or anthropic key)')
+    console.log('[Step 3] Skipped (missing fullName, companyHint, or anthropic key)')
   }
 
   // Step 4 — Google Custom Search
-  if ((firstName || lastName) && keys.google && keys.googleCx) {
-    console.log('[Waterfall] Step 4: Trying Google Custom Search...')
+  if (companyHint && keys.google && keys.googleCx) {
+    console.log('[Step 4] Running Google search for:', fullName, companyHint)
     try {
       const found = await searchGoogleForEmail(firstName, lastName, companyHint, keys.google, keys.googleCx)
       for (const e of found) {
@@ -327,66 +330,66 @@ async function runEnrichmentWaterfall(params: {
       }
       await logDebug(db, userId, 'google_cse', { firstName, lastName, companyHint }, { found }, 200)
       steps.push({ provider: 'google_cse', note: `found ${found.length} email(s)` })
-      console.log(`[Waterfall] Step 4 result: ${found.length} email(s) found`)
+      console.log('[Step 4] Search candidates found:', found)
     } catch (e: any) {
       await logDebug(db, userId, 'google_cse', { firstName, lastName, companyHint }, { error: String(e?.message || e) }, 500)
       steps.push({ provider: 'google_cse', note: 'failed' })
-      console.log('[Waterfall] Step 4 result: failed —', e?.message)
+      console.log('[Step 4] Failed —', e?.message)
     }
   } else {
-    console.log('[Waterfall] Step 4: Skipped (missing name or Google keys)')
+    console.log('[Step 4] Skipped (missing companyHint or Google keys)')
   }
 
-  // Step 5 — verify each candidate (stop on first verified)
-  if (candidatePool.length > 0 && (keys.myemailverifier || keys.kickbox)) {
-    console.log(`[Waterfall] Step 5: Verifying ${candidatePool.length} candidate(s)...`)
+  // Step 5 — verify each candidate (MyEmailVerifier -> Kickbox fallback, stop on first verified)
+  const allCandidates = candidatePool.map(c => c.email)
+  if (allCandidates.length > 0 && (keys.myemailverifier || keys.kickbox)) {
+    console.log('[Step 5] Verifying', allCandidates.length, 'candidates:', allCandidates)
     for (const cand of candidatePool) {
       const v = await verifyEmail(cand.email, keys.myemailverifier, keys.kickbox)
       await logDebug(db, userId, `verify_${v.method}`, { email: cand.email }, { verified: v.verified, accept_all: v.accept_all, result: v.result }, v.method === 'none' ? 500 : 200)
-      console.log(`[Waterfall] Step 5: ${cand.email} — verified=${v.verified}, accept_all=${v.accept_all}, method=${v.method}`)
       if (v.verified) {
         result.work_email = cand.email
         result.email_source = cand.origin
         result.email_accept_all = v.accept_all
         steps.push({ provider: 'verify', note: `verified ${cand.email} via ${v.method}${v.accept_all ? ' (accept_all)' : ''}` })
-        console.log('[Waterfall] Step 5: Email verified — returning early with', cand.email)
+        console.log('[Step 5] Verified email:', cand.email, '| source:', cand.origin)
         return result
       }
     }
     steps.push({ provider: 'verify', note: 'no candidates verified' })
-    console.log('[Waterfall] Step 5: No candidates verified')
-  } else if (candidatePool.length > 0) {
-    console.log('[Waterfall] Step 5: Skipped verification (no verifier keys)')
+    console.log('[Step 5] No candidates verified — moving to Apollo')
+  } else if (allCandidates.length === 0) {
+    console.log('[Step 5] No candidates to verify — moving to Apollo')
+  } else {
+    console.log('[Step 5] Skipped verification (no verifier keys)')
   }
 
   // Step 6 — Apollo fallback
   if (keys.apollo) {
-    console.log('[Waterfall] Step 6: Trying Apollo...')
+    console.log('[Step 6] Calling Apollo for:', fullName)
     try {
       const apollo = await enrichWithApollo(firstName, lastName, companyHint, linkedinUrl, keys.apollo)
       await logDebug(db, userId, 'apollo', { firstName, lastName, companyHint, linkedinUrl }, apollo.raw || {}, apollo.email ? 200 : 204)
-      console.log('[Waterfall] Step 6 Apollo result: email=', apollo.email ?? 'not found')
+      console.log('[Step 6] Apollo result:', apollo.email || 'none')
       if (apollo.full_name && !result.full_name) result.full_name = apollo.full_name
       if (apollo.title) { result.title = apollo.title; result.title_verified = true }
       if (apollo.company && !result.company) result.company = apollo.company
       if (apollo.email) {
         const v = await verifyEmail(apollo.email, keys.myemailverifier, keys.kickbox)
         await logDebug(db, userId, `verify_${v.method}`, { email: apollo.email, source: 'apollo' }, { verified: v.verified, accept_all: v.accept_all, result: v.result }, v.method === 'none' ? 500 : 200)
-        console.log(`[Waterfall] Step 6 verify: ${apollo.email} — verified=${v.verified}, method=${v.method}`)
         if (v.verified) {
           result.work_email = apollo.email.toLowerCase()
           result.email_source = 'apollo'
           result.email_accept_all = v.accept_all
           steps.push({ provider: 'apollo', note: `verified ${apollo.email}${v.accept_all ? ' (accept_all)' : ''}` })
-          console.log('[Waterfall] Step 6: Apollo email verified — returning early')
+          console.log('[Step 6] Apollo email verified:', apollo.email, '| source: apollo')
           return result
         }
-        // Accept Apollo email even unverified if no verifier is configured at all
         if (!keys.myemailverifier && !keys.kickbox) {
           result.work_email = apollo.email.toLowerCase()
           result.email_source = 'apollo'
           steps.push({ provider: 'apollo', note: 'accepted without verification (no verifier keys)' })
-          console.log('[Waterfall] Step 6: Apollo email accepted (no verifier configured)')
+          console.log('[Step 6] Apollo email accepted (no verifier configured):', apollo.email)
           return result
         }
         steps.push({ provider: 'apollo', note: 'email returned but failed verification' })
@@ -396,22 +399,19 @@ async function runEnrichmentWaterfall(params: {
     } catch (e: any) {
       await logDebug(db, userId, 'apollo', { firstName, lastName }, { error: String(e?.message || e) }, 500)
       steps.push({ provider: 'apollo', note: 'failed' })
-      console.log('[Waterfall] Step 6 Apollo failed —', e?.message)
+      console.log('[Step 6] Apollo failed —', e?.message)
     }
   } else {
-    console.log('[Waterfall] Step 6: Skipped (no Apollo key)')
+    console.log('[Step 6] Skipped (no Apollo key)')
   }
 
-  // Step 7 — FullEnrich (last resort, with hard 54s timeout to stay under Edge Function limit)
+  // Step 7 — FullEnrich (last resort)
   if (keys.fullenrich) {
-    console.log('[Waterfall] Step 7: Trying FullEnrich...')
+    console.log('[Step 7] All prior steps failed — calling FullEnrich as last resort')
     let enrichRaw: any = null
     let enrichStatus = 0
     try {
-      const timeoutPromise = new Promise<never>((_, reject) =>
-        setTimeout(() => reject(new Error('FullEnrich timeout — 54s exceeded')), 54000)
-      )
-      const fe = await Promise.race([enrichWithLinkedInV2(linkedinUrl, keys.fullenrich), timeoutPromise])
+      const fe = await enrichWithLinkedInV2(linkedinUrl, keys.fullenrich)
       enrichRaw = fe.raw
       enrichStatus = 200
       result.raw = fe.raw
@@ -426,24 +426,31 @@ async function runEnrichmentWaterfall(params: {
         result.personal_email = fe.personal_email
         result.email_source = 'fullenrich'
       }
-      const feNote = fe.work_email ? `found work email: ${fe.work_email}` : fe.personal_email ? `found personal email only: ${fe.personal_email}` : 'no email'
-      steps.push({ provider: 'fullenrich', note: feNote.replace(/: .+/, '') })
-      console.log('[Waterfall] Step 7 FullEnrich result:', feNote)
+      const selectedFE = fe.work_email || fe.personal_email || null
+      steps.push({ provider: 'fullenrich', note: fe.work_email ? 'found work email' : fe.personal_email ? 'found personal email only' : 'no email' })
+      console.log('[Step 7] FullEnrich result — email:', selectedFE || 'none — refunding credit')
+      if (!selectedFE) {
+        await refundCredit(db, userId)
+        console.log('[Step 7] No email from FullEnrich — credit refunded')
+      }
     } catch (e: any) {
       enrichRaw = { error: String(e?.message || e) }
       enrichStatus = 500
       result.fullenrich_failed = true
       steps.push({ provider: 'fullenrich', note: 'failed' })
-      console.log('[Waterfall] Step 7 FullEnrich failed —', e?.message)
+      console.log('[Step 7] FullEnrich failed —', e?.message, '— refunding credit')
+      await refundCredit(db, userId)
     } finally {
       await logDebug(db, userId, 'fullenrich_v2', { linkedin_url: linkedinUrl, company_hint: companyHint }, enrichRaw, enrichStatus)
     }
   } else {
-    console.log('[Waterfall] Step 7: Skipped (no FullEnrich key)')
+    console.log('[Step 7] Skipped (no FullEnrich key)')
+    // No FullEnrich key and no email from Steps 3-6 — refund credit
+    if (!result.work_email && !result.personal_email) {
+      await refundCredit(db, userId)
+      console.log('[Step 7] No providers returned email — credit refunded')
+    }
   }
-
-  const finalEmail = result.work_email || result.personal_email || null
-  console.log('[Waterfall] Complete. Final email:', finalEmail ?? 'none — no credit will be charged')
 
   return result
 }
@@ -1299,13 +1306,13 @@ Return ONLY the bullet list — no intro sentence, no JSON, no extra commentary.
       })
     }
 
-    // Pre-flight credit check (read-only — deduction happens only after email is found)
-    const { data: hasCredits, error: creditCheckErr } = await db.rpc('check_credits', { p_user_id: user.id })
-    if (creditCheckErr) {
-      console.error('check_credits RPC error:', creditCheckErr)
+    // Deduct credit upfront — refunded by waterfall Step 7 if no email is found
+    const { data: creditAllowed, error: creditErr } = await db.rpc('deduct_credit', { p_user_id: user.id })
+    if (creditErr) {
+      console.error('deduct_credit RPC error:', creditErr)
       return json({ error: { code: 'CREDIT_ERROR', message: 'Could not verify your credit balance. Please try again.' } }, 500)
     }
-    if (hasCredits === false) {
+    if (creditAllowed === false) {
       return json({ error: { code: 'CREDIT_LIMIT_REACHED', message: 'You have reached your lookup limit. Upgrade your plan for more enrichments.' } }, 402)
     }
 
@@ -1350,15 +1357,6 @@ Return ONLY the bullet list — no intro sentence, no JSON, no extra commentary.
     emailSource    = waterfall.email_source
     rawDataPayload = waterfall.raw
 
-    // Deduct credit only if an email was actually found
-    if (selectedEmail) {
-      const { error: deductErr } = await db.rpc('deduct_credit', { p_user_id: user.id })
-      if (deductErr) console.error('deduct_credit after waterfall failed (non-fatal):', deductErr)
-      console.log('[Credits] Credit deducted — email found:', selectedEmail)
-    } else {
-      console.log('[Credits] No email found — credit NOT charged')
-    }
-
     if (work_email) emailDomain = work_email.split('@')[1] || null
     else if (personal_email) emailDomain = personal_email.split('@')[1] || null
 
@@ -1402,6 +1400,7 @@ Return ONLY the bullet list — no intro sentence, no JSON, no extra commentary.
     } catch (e) { console.error('early upsert failed (non-fatal):', e) }
 
     if (!fullName) {
+      await refundCredit(db, user.id)
       return json({ error: { code: 'NOT_ENOUGH_DATA', message: 'Could not identify this person. Try again or check the LinkedIn profile URL.' } }, 422)
     }
 
@@ -1494,6 +1493,8 @@ Return ONLY the bullet list — no intro sentence, no JSON, no extra commentary.
         .maybeSingle()
       isBookmarked = savedRow?.is_bookmarked ?? false
     } catch (e) { console.error('saved_profiles upsert failed (non-fatal):', e) }
+
+    console.log('[FINAL] status:', status, '| email:', selectedEmail || 'none', '| source:', emailSource || 'none', '| draft:', draft ? 'generated' : 'skipped')
 
     return json({
       status, fromCache: false, isBookmarked, runId,
